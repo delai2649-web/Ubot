@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Userbot SaaS Bot - Single File Deployment
-Ready to use - Just deploy and run!
+Userbot SaaS Bot - Fixed Version
+Handler sudah diperbaiki!
 """
 
 import os
@@ -19,7 +19,7 @@ from telegram.ext import (
     Application, CommandHandler, MessageHandler, 
     CallbackQueryHandler, ContextTypes, filters
 )
-from pyrogram import Client
+from pyrogram import Client, filters as pyro_filters
 from pyrogram.errors import (
     PhoneNumberInvalid, PhoneCodeInvalid, 
     PhoneCodeExpired, SessionPasswordNeeded,
@@ -133,39 +133,49 @@ class UserbotManager:
     async def start_userbot(self, user_id, plan):
         uid = str(user_id)
         if uid in self.clients and self.active.get(uid):
+            logger.info(f"Userbot {uid} already active")
             return True, "Already active"
-
+        
         session = get_session(user_id)
         if not session:
+            logger.error(f"No session found for {uid}")
             return False, "Session not found"
-
+        
         try:
+            logger.info(f"Starting userbot {uid}...")
+            
+            # Buat client dengan in_memory=True
             client = Client(
-                f"ubot_{uid}",
+                name=f"ubot_{uid}",
                 api_id=API_ID,
                 api_hash=API_HASH,
                 session_string=session,
                 in_memory=True
             )
-
+            
+            # Register handlers SEBELUM start
             await self._register_handlers(client, uid, plan)
+            
+            # Start client
             await client.start()
-
+            
             self.clients[uid] = client
             self.active[uid] = True
-
+            
             save_user(user_id, {
                 'userbot_active': True,
                 'last_started': datetime.now().isoformat()
             })
-
-            logger.info(f"✅ Userbot {uid} started")
+            
+            logger.info(f"✅ Userbot {uid} started successfully")
             return True, "Success"
-
+            
         except Exception as e:
-            logger.error(f"❌ Start failed {uid}: {e}")
+            logger.error(f"❌ Failed to start userbot {uid}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return False, str(e)
-
+    
     async def stop_userbot(self, user_id):
         uid = str(user_id)
         if uid in self.clients:
@@ -173,65 +183,144 @@ class UserbotManager:
                 await self.clients[uid].stop()
                 self.active[uid] = False
                 save_user(user_id, {'userbot_active': False})
+                logger.info(f"Userbot {uid} stopped")
                 return True
             except Exception as e:
-                logger.error(f"Stop error {uid}: {e}")
+                logger.error(f"Error stopping {uid}: {e}")
         return False
-
+    
     async def _register_handlers(self, client, user_id, plan):
-        from pyrogram import filters as f
+        """Register handlers dengan benar"""
         plugins = PLANS.get(plan, PLANS['lite'])['plugins']
-
-        @client.on_message(f.command("ping") & f.me)
-        async def ping(c, m):
-            s = time.time()
-            await m.edit("🏓 Pong!")
-            e = time.time()
-            await m.edit(f"🏓 Pong! `{(e-s)*1000:.1f}ms`")
-
-        @client.on_message(f.command("alive") & f.me)
-        async def alive(c, m):
-            u = get_user(user_id) or {}
-            exp = u.get('expired', 'Unknown')[:10] if u.get('expired') else 'Unknown'
-            await m.edit(f"🤖 **Active!**\nPlan: {plan.upper()}\nExpired: {exp}")
-
-        @client.on_message(f.command("help") & f.me)
-        async def help_cmd(c, m):
-            txt = f"**Commands ({plan.upper()}):**\n\n`.ping` `.alive` `.help`"
-            if plugins >= 25:
-                txt += "\n`.afk` `.spam`"
-            if plugins >= 56:
-                txt += "\n`.broadcast` `.tagall`"
-            await m.edit(txt)
-
+        
+        logger.info(f"Registering handlers for {user_id} with plan {plan}")
+        
+        # Handler Ping - dengan prefix . (titik)
+        @client.on_message(pyro_filters.command("ping", prefixes=".") & pyro_filters.me)
+        async def ping_handler(client, message):
+            logger.info(f"Ping command received from {user_id}")
+            try:
+                start = time.time()
+                await message.edit("🏓 Pong!")
+                end = time.time()
+                await message.edit(f"🏓 **Pong!**\n`{(end-start)*1000:.1f}ms`")
+            except Exception as e:
+                logger.error(f"Ping error: {e}")
+        
+        # Handler Alive
+        @client.on_message(pyro_filters.command("alive", prefixes=".") & pyro_filters.me)
+        async def alive_handler(client, message):
+            logger.info(f"Alive command received from {user_id}")
+            try:
+                u = get_user(user_id) or {}
+                expired = u.get('expired', 'Unknown')[:10] if u.get('expired') else 'Unknown'
+                await message.edit(f"🤖 **Active!**\nPlan: {plan.upper()}\nExpired: {expired}")
+            except Exception as e:
+                logger.error(f"Alive error: {e}")
+        
+        # Handler Help
+        @client.on_message(pyro_filters.command("help", prefixes=".") & pyro_filters.me)
+        async def help_handler(client, message):
+            logger.info(f"Help command received from {user_id}")
+            try:
+                text = f"🤖 **COMMANDS ({plan.upper()})**\n\n"
+                text += "`.ping` - Cek response\n"
+                text += "`.alive` - Cek status\n"
+                text += "`.help` - Bantuan\n"
+                if plugins >= 25:
+                    text += "\n`.afk [reason]` - Set AFK\n"
+                    text += "`.spam <n> <text>` - Spam\n"
+                if plugins >= 56:
+                    text += "\n`.broadcast <text>` - Broadcast\n"
+                    text += "`.tagall` - Tag all members\n"
+                await message.edit(text)
+            except Exception as e:
+                logger.error(f"Help error: {e}")
+        
+        # Handler AFK (Lite+)
         if plugins >= 25:
-            @client.on_message(f.command("afk") & f.me)
-            async def afk(c, m):
-                r = m.text.split(maxsplit=1)[1] if len(m.text.split()) > 1 else "AFK"
-                await m.edit(f"😴 **AFK:** {r}")
-
-            @client.on_message(f.command("spam") & f.me)
-            async def spam(c, m):
+            @client.on_message(pyro_filters.command("afk", prefixes=".") & pyro_filters.me)
+            async def afk_handler(client, message):
+                logger.info(f"AFK command from {user_id}")
                 try:
-                    a = m.text.split()
-                    if len(a) < 3:
-                        return await m.edit("Usage: `.spam <n> <text>`")
-                    n = min(int(a[1]), 10)
-                    t = " ".join(a[2:])
-                    await m.delete()
-                    for _ in range(n):
-                        await c.send_message(m.chat.id, t)
+                    reason = message.text.split(maxsplit=1)[1] if len(message.text.split()) > 1 else "AFK"
+                    await message.edit(f"😴 **AFK:** {reason}")
+                except Exception as e:
+                    logger.error(f"AFK error: {e}")
+            
+            @client.on_message(pyro_filters.command("spam", prefixes=".") & pyro_filters.me)
+            async def spam_handler(client, message):
+                logger.info(f"Spam command from {user_id}")
+                try:
+                    args = message.text.split()
+                    if len(args) < 3:
+                        await message.edit("Usage: `.spam <jumlah> <teks>`")
+                        return
+                    count = min(int(args[1]), 10)
+                    text = " ".join(args[2:])
+                    await message.delete()
+                    for i in range(count):
+                        await client.send_message(message.chat.id, text)
                         await asyncio.sleep(0.5)
                 except Exception as e:
-                    await m.edit(f"Error: {e}")
+                    logger.error(f"Spam error: {e}")
+                    await message.edit(f"Error: {e}")
+        
+        # Handler Broadcast & Tagall (Basic+)
+        if plugins >= 56:
+            @client.on_message(pyro_filters.command("broadcast", prefixes=".") & pyro_filters.me)
+            async def broadcast_handler(client, message):
+                logger.info(f"Broadcast command from {user_id}")
+                try:
+                    text = message.text.split(maxsplit=1)[1] if len(message.text.split()) > 1 else None
+                    if not text:
+                        await message.edit("Usage: `.broadcast <pesan>`")
+                        return
+                    await message.edit("📢 Broadcasting...")
+                    count = 0
+                    async for dialog in client.get_dialogs():
+                        try:
+                            if dialog.chat.type in ["group", "supergroup"]:
+                                await client.send_message(dialog.chat.id, text)
+                                count += 1
+                                await asyncio.sleep(1)
+                        except Exception as e:
+                            logger.error(f"Broadcast error to {dialog.chat.id}: {e}")
+                    await message.edit(f"✅ Broadcast ke {count} grup")
+                except Exception as e:
+                    logger.error(f"Broadcast error: {e}")
+            
+            @client.on_message(pyro_filters.command("tagall", prefixes=".") & pyro_filters.me)
+            async def tagall_handler(client, message):
+                logger.info(f"Tagall command from {user_id}")
+                try:
+                    if message.chat.type not in ["group", "supergroup"]:
+                        await message.edit("Hanya untuk grup!")
+                        return
+                    await message.edit("🏷️ Tagging...")
+                    tags = []
+                    async for member in client.get_chat_members(message.chat.id):
+                        if not member.user.is_bot:
+                            tags.append(f"[{member.user.first_name}](tg://user?id={member.user.id})")
+                        if len(tags) == 5:
+                            await client.send_message(message.chat.id, " ".join(tags))
+                            tags = []
+                            await asyncio.sleep(1)
+                    if tags:
+                        await client.send_message(message.chat.id, " ".join(tags))
+                    await message.delete()
+                except Exception as e:
+                    logger.error(f"Tagall error: {e}")
+        
+        logger.info(f"✅ Handlers registered for {user_id}")
 
 userbot_manager = UserbotManager()
 
-# ==================== HANDLERS ====================
+# ==================== BOT HANDLERS ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     data = get_user(user.id)
-
+    
     if not data:
         save_user(user.id, {
             'user_id': user.id,
@@ -242,7 +331,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'expired': None,
             'userbot_active': False
         })
-
+    
     text = f"👋 **Halo {user.first_name}!**\n\nPilih menu:"
     keyboard = [
         [InlineKeyboardButton("✨ Buat Userbot", callback_data='create')],
@@ -257,7 +346,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     data = query.data
     uid = update.effective_user.id
-
+    
     if data == 'create':
         udata = get_user(uid)
         if not udata or not udata.get('plan'):
@@ -270,35 +359,35 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("❌ Belum punya plan! Pilih:", reply_markup=InlineKeyboardMarkup(kb))
         else:
             await setup_flow(query, context)
-
+    
     elif data == 'pricing':
         txt = """📦 **HARGA**\n\n⚡ Lite: Rp10k (25 plugin)\n🧩 Basic: Rp15k (56 plugin)\n💎 Pro: Rp22k (99 plugin)"""
         await query.edit_message_text(txt, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back')]]))
-
+    
     elif data.startswith('buy_'):
         plan = data.split('_')[1]
         price = PLANS[plan]['price']
         oid = ''.join(random.choices('ABCDEFGHJKLMNPQRSTUVWXYZ23456789', k=8))
         pending_payments[uid] = {'order_id': oid, 'plan': plan, 'amount': price}
-
+        
         txt = f"""🛒 **PEMBAYARAN**\n\n📋 Order: `{oid}`\n📦 {PLANS[plan]['name']}\n💰 Rp{price:,}\n\n🏦 BCA: 1234567890\n🏦 DANA: 081234567890\n\n✅ Klik Konfirmasi setelah bayar"""
         kb = [[InlineKeyboardButton("✅ Konfirmasi", callback_data='confirm')], [InlineKeyboardButton("🔙 Back", callback_data='back')]]
         await query.edit_message_text(txt, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(kb))
-
+    
     elif data == 'confirm':
         pay = pending_payments.get(uid, {})
         if not pay:
             return await query.edit_message_text("❌ Data tidak ditemukan", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back')]]))
-
+        
         adm_txt = f"🚨 **NEW PAYMENT**\n\n👤 {update.effective_user.mention_html()}\n🆔 `{uid}`\n📋 {pay['order_id']}\n📦 {pay['plan']}\n💰 Rp{pay['amount']:,}\n\n✅ `/verify {uid} {pay['order_id']}`"
         try:
             await context.bot.send_message(ADMIN_ID, adm_txt, parse_mode='HTML')
         except Exception as e:
             logger.error(f"Admin notify error: {e}")
-
+        
         await query.edit_message_text("📸 **Upload bukti pembayaran!**", parse_mode='Markdown')
         context.user_data['waiting_payment'] = True
-
+    
     elif data == 'status':
         u = get_user(uid) or {}
         pl = u.get('plan', 'NONE')
@@ -306,7 +395,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         st = "✅ Aktif" if u.get('userbot_active') else "❌ Nonaktif"
         txt = f"📊 **STATUS**\n\n👤 {u.get('name', 'N/A')}\n📦 {pl.upper()}\n⏱️ {ex}\n🤖 {st}"
         await query.edit_message_text(txt, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back')]]))
-
+    
     elif data == 'restart':
         u = get_user(uid) or {}
         if not u.get('plan'):
@@ -314,19 +403,28 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("🔄 Restarting...")
         await userbot_manager.stop_userbot(uid)
         await asyncio.sleep(2)
-        ok, _ = await userbot_manager.start_userbot(uid, u.get('plan'))
-        txt = "✅ **Restarted!**" if ok else "❌ Failed"
+        ok, msg = await userbot_manager.start_userbot(uid, u.get('plan'))
+        txt = "✅ **Restarted!**" if ok else f"❌ Failed: {msg}"
         await query.edit_message_text(txt, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back')]]))
-
+    
     elif data == 'back':
         await start(update, context)
-
+    
     elif data == 'setup':
         await setup_flow(query, context)
 
 async def setup_flow(query, context):
     await query.edit_message_text("""
-📱 **SETUP**\n\n**Langkah 1/3**\nKirim nomor telepon:\nFormat: `+6281234567890`\n\n⚠️ Pastikan:\n• Nomor aktif\n• Bisa terima SMS\n• Belum jadi userbot lain
+📱 **SETUP**
+
+**Langkah 1/3**
+Kirim nomor telepon:
+Format: `+6281234567890`
+
+⚠️ Pastikan:
+• Nomor aktif
+• Bisa terima SMS
+• Belum jadi userbot lain
     """, parse_mode='Markdown')
     context.user_data['setup_step'] = 'phone'
 
@@ -334,14 +432,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     step = context.user_data.get('setup_step')
     text = update.message.text
-
+    
     if step == 'phone':
         if not text.startswith('+') or not text[1:].replace(' ', '').isdigit():
             return await update.message.reply_text("❌ Format: `+6281234567890`")
-
+        
         await update.message.reply_text("⏳ Sending OTP...")
         try:
-            cl = Client(f"temp_{uid}", API_ID, API_HASH, phone_number=text, workdir=f"sessions/{uid}")
+            cl = Client(f"temp_{uid}", API_ID, API_HASH, phone_number=text)
             await cl.connect()
             sent = await cl.send_code(text)
             user_clients[uid] = {'client': cl, 'phone': text, 'hash': sent.phone_code_hash}
@@ -350,7 +448,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"OTP error: {e}")
             await update.message.reply_text(f"❌ Error: {e}")
-
+    
     elif step == 'otp':
         cd = user_clients.get(uid)
         if not cd:
@@ -361,24 +459,25 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             sess = await cl.export_session_string()
             save_session(uid, sess)
             await cl.disconnect()
-
+            
             ud = get_user(uid)
             pl = ud.get('plan', 'lite')
-            ok, _ = await userbot_manager.start_userbot(uid, pl)
-
+            ok, msg = await userbot_manager.start_userbot(uid, pl)
+            
             if ok:
                 await update.message.reply_text(f"🔥 **USERBOT AKTIF!**\n\n✅ Plan: {pl.upper()}\n✅ Status: Aktif 24/7\n\nKetik `.help` untuk command.\n\n⚠️ **Jangan logout dari HP!**")
             else:
-                await update.message.reply_text("❌ Gagal aktifkan")
-
+                await update.message.reply_text(f"❌ Gagal aktifkan: {msg}")
+            
             context.user_data['setup_step'] = None
             user_clients.pop(uid, None)
         except SessionPasswordNeeded:
             context.user_data['setup_step'] = '2fa'
             await update.message.reply_text("🔐 **2FA Required**\n\nMasukkan password:")
         except Exception as e:
+            logger.error(f"OTP verify error: {e}")
             await update.message.reply_text(f"❌ Error: {e}")
-
+    
     elif step == '2fa':
         cd = user_clients.get(uid)
         if not cd:
@@ -389,15 +488,20 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             sess = await cl.export_session_string()
             save_session(uid, sess)
             await cl.disconnect()
-
+            
             ud = get_user(uid)
             pl = ud.get('plan', 'lite')
-            ok, _ = await userbot_manager.start_userbot(uid, pl)
-
-            await update.message.reply_text("🔥 **Userbot aktif!**\n\nKetik `.help` untuk command." if ok else "❌ Gagal aktifkan")
+            ok, msg = await userbot_manager.start_userbot(uid, pl)
+            
+            if ok:
+                await update.message.reply_text("🔥 **Userbot aktif!**\n\nKetik `.help` untuk command.")
+            else:
+                await update.message.reply_text(f"❌ Gagal: {msg}")
+            
             context.user_data['setup_step'] = None
             user_clients.pop(uid, None)
         except Exception as e:
+            logger.error(f"2FA error: {e}")
             await update.message.reply_text(f"❌ Password salah: {e}")
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -417,16 +521,16 @@ async def verify_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text("❌ Admin only!")
     if len(context.args) < 2:
         return await update.message.reply_text("Usage: `/verify <user_id> <order_id>`")
-
+    
     try:
         uid = int(context.args[0])
         oid = context.args[1]
         pay = pending_payments.get(uid, {})
         plan = pay.get('plan', 'lite')
         exp = (datetime.now() + timedelta(days=30)).isoformat()
-
+        
         save_user(uid, {'plan': plan, 'expired': exp, 'verified': True, 'order_id': oid})
-
+        
         await context.bot.send_message(
             uid,
             f"✅ **VERIFIED!**\n\n📦 {PLANS[plan]['name']}\n⏱️ Expired: {exp[:10]}\n\n🚀 Klik Setup:",
@@ -434,6 +538,7 @@ async def verify_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await update.message.reply_text(f"✅ User {uid} verified!")
     except Exception as e:
+        logger.error(f"Verify error: {e}")
         await update.message.reply_text(f"❌ Error: {e}")
 
 # ==================== MAIN ====================
@@ -444,9 +549,12 @@ async def post_init(app):
     for uid, data in users.items():
         if data.get('userbot_active') and data.get('plan'):
             try:
-                ok, _ = await userbot_manager.start_userbot(uid, data['plan'])
+                ok, msg = await userbot_manager.start_userbot(uid, data['plan'])
                 if ok:
                     cnt += 1
+                    logger.info(f"Restored userbot {uid}")
+                else:
+                    logger.error(f"Failed to restore {uid}: {msg}")
                 await asyncio.sleep(2)
             except Exception as e:
                 logger.error(f"Restore error {uid}: {e}")
@@ -454,15 +562,15 @@ async def post_init(app):
 
 def main():
     threading.Thread(target=run_flask, daemon=True).start()
-
+    
     application = Application.builder().token(TOKEN).post_init(post_init).build()
-
+    
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("verify", verify_cmd))
     application.add_handler(CallbackQueryHandler(button))
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-
+    
     logger.info("🤖 Bot started!")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
