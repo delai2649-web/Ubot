@@ -1,7 +1,10 @@
-#!/usr/bin/env python3
+
+# Saya akan buatkan main.py lengkap dengan AutoBC dan PMPermit
+
+main_py_complete = '''#!/usr/bin/env python3
 """
-Userbot SaaS Bot - Fixed Version
-Handler sudah diperbaiki!
+Userbot SaaS Bot - Complete Version
+With AutoBC and PMPermit features
 """
 
 import os
@@ -124,6 +127,214 @@ PLANS = {
 pending_payments = {}
 user_clients = {}
 
+# ==================== AUTOBC MANAGER ====================
+class AutoBCManager:
+    """Manager untuk Auto Broadcast"""
+    
+    def __init__(self):
+        self.active_tasks = {}      # {user_id: asyncio.Task}
+        self.bc_status = {}         # {user_id: {'running': bool, 'count': int, 'targets': []}}
+        self.templates = {}         # {user_id: {template_name: content}}
+    
+    async def start_autobc(self, client, user_id, message_text, interval=60, 
+                          forward=False, reply_msg=None, targets=None):
+        """Mulai auto broadcast"""
+        
+        # Stop yang sudah berjalan dulu
+        if user_id in self.active_tasks:
+            self.stop_autobc(user_id)
+        
+        # Default: semua grup
+        if not targets:
+            targets = []
+            async for dialog in client.get_dialogs():
+                if dialog.chat.type in ["group", "supergroup"]:
+                    targets.append(dialog.chat.id)
+        
+        if not targets:
+            return False, "Tidak ada grup target!"
+        
+        self.bc_status[user_id] = {
+            'running': True,
+            'count': 0,
+            'targets': targets,
+            'interval': interval,
+            'forward': forward,
+            'start_time': datetime.now().isoformat()
+        }
+        
+        async def broadcast_loop():
+            while self.bc_status.get(user_id, {}).get('running', False):
+                for target in targets:
+                    if not self.bc_status.get(user_id, {}).get('running'):
+                        break
+                    
+                    try:
+                        if forward and reply_msg:
+                            await reply_msg.forward(target)
+                        else:
+                            await client.send_message(target, message_text)
+                        
+                        self.bc_status[user_id]['count'] += 1
+                        
+                        # Delay antar grup (anti-flood)
+                        await asyncio.sleep(2)
+                        
+                    except FloodWait as e:
+                        await asyncio.sleep(e.value)
+                    except Exception as e:
+                        logger.error(f"BC error to {target}: {e}")
+                        continue
+                
+                # Delay antar siklus
+                await asyncio.sleep(interval)
+        
+        # Jalankan di background
+        task = asyncio.create_task(broadcast_loop())
+        self.active_tasks[user_id] = task
+        
+        return True, f"AutoBC started! Targets: {len(targets)}"
+    
+    def stop_autobc(self, user_id):
+        """Hentikan auto broadcast"""
+        if user_id in self.bc_status:
+            self.bc_status[user_id]['running'] = False
+        
+        if user_id in self.active_tasks:
+            self.active_tasks[user_id].cancel()
+            del self.active_tasks[user_id]
+            return True
+        return False
+    
+    def get_status(self, user_id):
+        """Cek status autobc"""
+        return self.bc_status.get(user_id)
+    
+    def save_template(self, user_id, name, content):
+        """Simpan template pesan"""
+        if user_id not in self.templates:
+            self.templates[user_id] = {}
+        self.templates[user_id][name] = content
+        return True
+    
+    def get_template(self, user_id, name):
+        """Ambil template"""
+        return self.templates.get(user_id, {}).get(name)
+
+# Global instance
+autobc_manager = AutoBCManager()
+
+# ==================== PM PERMIT MANAGER ====================
+class PMPermitManager:
+    """Manager untuk PM Permit (anti-spam private message)"""
+    
+    def __init__(self):
+        self.enabled = {}           # {user_id: bool}
+        self.approved = {}          # {user_id: [user_ids]}
+        self.blocked = {}           # {user_id: [user_ids]}
+        self.temp_msg = {}          # {user_id: str}
+        self.warn_count = {}        # {(owner_id, user_id): count}
+        self.max_warn = 3
+    
+    def enable(self, user_id, message=None):
+        """Enable PM Permit"""
+        self.enabled[user_id] = True
+        self.approved[user_id] = []
+        self.blocked[user_id] = []
+        self.temp_msg[user_id] = message or self.get_default_msg()
+        return True
+    
+    def disable(self, user_id):
+        """Disable PM Permit"""
+        self.enabled[user_id] = False
+        return True
+    
+    def is_enabled(self, user_id):
+        """Cek status"""
+        return self.enabled.get(user_id, False)
+    
+    def approve(self, owner_id, user_id):
+        """Approve user"""
+        if owner_id not in self.approved:
+            self.approved[owner_id] = []
+        if user_id not in self.approved[owner_id]:
+            self.approved[owner_id].append(user_id)
+            return True
+        return False
+    
+    def disapprove(self, owner_id, user_id):
+        """Hapus approve"""
+        if owner_id in self.approved and user_id in self.approved[owner_id]:
+            self.approved[owner_id].remove(user_id)
+            return True
+        return False
+    
+    def block(self, owner_id, user_id):
+        """Block user"""
+        if owner_id not in self.blocked:
+            self.blocked[owner_id] = []
+        if user_id not in self.blocked[owner_id]:
+            self.blocked[owner_id].append(user_id)
+            return True
+        return False
+    
+    def unblock(self, owner_id, user_id):
+        """Unblock user"""
+        if owner_id in self.blocked and user_id in self.blocked[owner_id]:
+            self.blocked[owner_id].remove(user_id)
+            return True
+        return False
+    
+    def is_approved(self, owner_id, user_id):
+        """Cek apakah user diapprove"""
+        return user_id in self.approved.get(owner_id, [])
+    
+    def is_blocked(self, owner_id, user_id):
+        """Cek apakah user diblock"""
+        return user_id in self.blocked.get(owner_id, [])
+    
+    def get_default_msg(self):
+        """Pesan default PM Permit"""
+        return """⚠️ **PM SECURITY**
+
+Halo! Saya adalah assistant bot.
+Owner saya sedang sibuk.
+
+Pesan Anda telah saya log.
+Mohon tunggu balasan dari owner.
+
+⛔ **Jangan spam atau Anda akan diblokir!**
+**Warn:** {warn}/{max_warn}
+"""
+    
+    def get_message(self, user_id):
+        """Ambil pesan custom atau default"""
+        return self.temp_msg.get(user_id, self.get_default_msg())
+    
+    def set_message(self, user_id, message):
+        """Set pesan custom"""
+        self.temp_msg[user_id] = message
+        return True
+    
+    def get_warn(self, owner_id, user_id):
+        """Get warn count"""
+        return self.warn_count.get((owner_id, user_id), 0)
+    
+    def add_warn(self, owner_id, user_id):
+        """Tambah warn"""
+        key = (owner_id, user_id)
+        self.warn_count[key] = self.warn_count.get(key, 0) + 1
+        return self.warn_count[key]
+    
+    def reset_warn(self, owner_id, user_id):
+        """Reset warn"""
+        key = (owner_id, user_id)
+        if key in self.warn_count:
+            del self.warn_count[key]
+
+# Global instance
+pmpermit_manager = PMPermitManager()
+
 # ==================== USERBOT MANAGER ====================
 class UserbotManager:
     def __init__(self):
@@ -144,7 +355,6 @@ class UserbotManager:
         try:
             logger.info(f"Starting userbot {uid}...")
             
-            # Buat client dengan in_memory=True
             client = Client(
                 name=f"ubot_{uid}",
                 api_id=API_ID,
@@ -195,7 +405,7 @@ class UserbotManager:
         
         logger.info(f"Registering handlers for {user_id} with plan {plan}")
         
-        # Handler Ping - dengan prefix . (titik)
+        # Handler Ping
         @client.on_message(pyro_filters.command("ping", prefixes=".") & pyro_filters.me)
         async def ping_handler(client, message):
             logger.info(f"Ping command received from {user_id}")
@@ -230,9 +440,15 @@ class UserbotManager:
                 if plugins >= 25:
                     text += "\n`.afk [reason]` - Set AFK\n"
                     text += "`.spam <n> <text>` - Spam\n"
+                    text += "`.autobc` - Auto broadcast\n"
+                    text += "`.stopbc` - Stop broadcast\n"
                 if plugins >= 56:
                     text += "\n`.broadcast <text>` - Broadcast\n"
-                    text += "`.tagall` - Tag all members\n"
+                    text += "`.tagall` - Tag all\n"
+                if plugins >= 99:
+                    text += "\n`.pmpermit on/off` - PM security\n"
+                    text += "`.approve` - Approve user\n"
+                    text += "`.block` - Block user\n"
                 await message.edit(text)
             except Exception as e:
                 logger.error(f"Help error: {e}")
@@ -265,6 +481,70 @@ class UserbotManager:
                 except Exception as e:
                     logger.error(f"Spam error: {e}")
                     await message.edit(f"Error: {e}")
+            
+            # Handler AutoBC
+            @client.on_message(pyro_filters.command("autobc", prefixes=".") & pyro_filters.me)
+            async def autobc_handler(client, message):
+                logger.info(f"AutoBC command from {user_id}")
+                try:
+                    args = message.text.split(maxsplit=2)
+                    if len(args) < 2:
+                        await message.edit("Usage: `.autobc <interval_detik> <pesan>`\nContoh: `.autobc 60 Halo semua`")
+                        return
+                    
+                    interval = int(args[1])
+                    text = args[2] if len(args) > 2 else "Broadcast message"
+                    
+                    # Get targets
+                    targets = []
+                    async for dialog in client.get_dialogs():
+                        if dialog.chat.type in ["group", "supergroup"]:
+                            targets.append(dialog.chat.id)
+                    
+                    if not targets:
+                        await message.edit("❌ Tidak ada grup target!")
+                        return
+                    
+                    ok, msg = await autobc_manager.start_autobc(
+                        client, user_id, text, interval=interval, targets=targets
+                    )
+                    
+                    if ok:
+                        await message.edit(f"✅ **AutoBC started!**\n\nInterval: {interval} detik\nTargets: {len(targets)} grup\n\nKetik `.stopbc` untuk berhenti.")
+                    else:
+                        await message.edit(f"❌ {msg}")
+                        
+                except Exception as e:
+                    logger.error(f"AutoBC error: {e}")
+                    await message.edit(f"❌ Error: {e}")
+            
+            @client.on_message(pyro_filters.command("stopbc", prefixes=".") & pyro_filters.me)
+            async def stopbc_handler(client, message):
+                logger.info(f"StopBC command from {user_id}")
+                try:
+                    if autobc_manager.stop_autobc(user_id):
+                        await message.edit("✅ **AutoBC stopped!**")
+                    else:
+                        await message.edit("❌ AutoBC tidak berjalan.")
+                except Exception as e:
+                    logger.error(f"StopBC error: {e}")
+            
+            @client.on_message(pyro_filters.command("bcstatus", prefixes=".") & pyro_filters.me)
+            async def bcstatus_handler(client, message):
+                logger.info(f"BCStatus command from {user_id}")
+                try:
+                    status = autobc_manager.get_status(user_id)
+                    if status:
+                        text = f"📊 **AutoBC Status**\n\n"
+                        text += f"Running: {'✅' if status['running'] else '❌'}\n"
+                        text += f"Count: {status['count']}\n"
+                        text += f"Targets: {len(status['targets'])}\n"
+                        text += f"Interval: {status['interval']} detik"
+                        await message.edit(text)
+                    else:
+                        await message.edit("❌ AutoBC tidak berjalan.")
+                except Exception as e:
+                    logger.error(f"BCStatus error: {e}")
         
         # Handler Broadcast & Tagall (Basic+)
         if plugins >= 56:
@@ -311,6 +591,111 @@ class UserbotManager:
                     await message.delete()
                 except Exception as e:
                     logger.error(f"Tagall error: {e}")
+        
+        # Handler PM Permit (Pro)
+        if plugins >= 99:
+            @client.on_message(pyro_filters.command("pmpermit", prefixes=".") & pyro_filters.me)
+            async def pmpermit_handler(client, message):
+                logger.info(f"PMPermit command from {user_id}")
+                try:
+                    args = message.text.split()
+                    if len(args) < 2:
+                        status = "ON" if pmpermit_manager.is_enabled(user_id) else "OFF"
+                        await message.edit(f"PM Permit: {status}\n\nUsage: `.pmpermit on/off`")
+                        return
+                    
+                    action = args[1].lower()
+                    if action == "on":
+                        pmpermit_manager.enable(user_id)
+                        await message.edit("✅ **PM Permit enabled!**\n\nSekarang orang yang PM akan di-filter.")
+                    elif action == "off":
+                        pmpermit_manager.disable(user_id)
+                        await message.edit("✅ **PM Permit disabled!**")
+                    else:
+                        await message.edit("Usage: `.pmpermit on/off`")
+                except Exception as e:
+                    logger.error(f"PMPermit error: {e}")
+            
+            @client.on_message(pyro_filters.command("approve", prefixes=".") & pyro_filters.me)
+            async def approve_handler(client, message):
+                logger.info(f"Approve command from {user_id}")
+                try:
+                    if message.reply_to_message:
+                        target_id = message.reply_to_message.from_user.id
+                        pmpermit_manager.approve(user_id, target_id)
+                        await message.edit(f"✅ User {target_id} di-approve!")
+                    else:
+                        await message.edit("Reply ke pesan user yang mau di-approve!")
+                except Exception as e:
+                    logger.error(f"Approve error: {e}")
+            
+            @client.on_message(pyro_filters.command("disapprove", prefixes=".") & pyro_filters.me)
+            async def disapprove_handler(client, message):
+                logger.info(f"Disapprove command from {user_id}")
+                try:
+                    if message.reply_to_message:
+                        target_id = message.reply_to_message.from_user.id
+                        pmpermit_manager.disapprove(user_id, target_id)
+                        await message.edit(f"✅ User {target_id} di-disapprove!")
+                    else:
+                        await message.edit("Reply ke pesan user yang mau di-disapprove!")
+                except Exception as e:
+                    logger.error(f"Disapprove error: {e}")
+            
+            @client.on_message(pyro_filters.command("block", prefixes=".") & pyro_filters.me)
+            async def block_handler(client, message):
+                logger.info(f"Block command from {user_id}")
+                try:
+                    if message.reply_to_message:
+                        target_id = message.reply_to_message.from_user.id
+                        pmpermit_manager.block(user_id, target_id)
+                        await message.edit(f"🚫 User {target_id} di-block!")
+                    else:
+                        await message.edit("Reply ke pesan user yang mau di-block!")
+                except Exception as e:
+                    logger.error(f"Block error: {e}")
+            
+            @client.on_message(pyro_filters.command("unblock", prefixes=".") & pyro_filters.me)
+            async def unblock_handler(client, message):
+                logger.info(f"Unblock command from {user_id}")
+                try:
+                    if message.reply_to_message:
+                        target_id = message.reply_to_message.from_user.id
+                        pmpermit_manager.unblock(user_id, target_id)
+                        await message.edit(f"✅ User {target_id} di-unblock!")
+                    else:
+                        await message.edit("Reply ke pesan user yang mau di-unblock!")
+                except Exception as e:
+                    logger.error(f"Unblock error: {e}")
+            
+            # PM Permit Handler (untuk pesan masuk)
+            @client.on_message(pyro_filters.private & ~pyro_filters.me)
+            async def pm_handler(client, message):
+                if not pmpermit_manager.is_enabled(user_id):
+                    return
+                
+                sender_id = message.from_user.id
+                
+                # Cek kalau sudah approved atau blocked
+                if pmpermit_manager.is_approved(user_id, sender_id):
+                    return
+                if pmpermit_manager.is_blocked(user_id, sender_id):
+                    await message.delete()
+                    return
+                
+                # Cek warn
+                warn = pmpermit_manager.add_warn(user_id, sender_id)
+                
+                if warn >= pmpermit_manager.max_warn:
+                    pmpermit_manager.block(user_id, sender_id)
+                    await client.send_message(sender_id, "🚫 **Anda telah diblokir karena spam!**")
+                    await message.delete()
+                else:
+                    # Kirim warning
+                    msg = pmpermit_manager.get_message(user_id)
+                    msg = msg.format(warn=warn, max_warn=pmpermit_manager.max_warn)
+                    await client.send_message(sender_id, msg)
+                    await message.delete()
         
         logger.info(f"✅ Handlers registered for {user_id}")
 
@@ -415,16 +800,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def setup_flow(query, context):
     await query.edit_message_text("""
-📱 **SETUP**
-
-**Langkah 1/3**
-Kirim nomor telepon:
-Format: `+6281234567890`
-
-⚠️ Pastikan:
-• Nomor aktif
-• Bisa terima SMS
-• Belum jadi userbot lain
+📱 **SETUP**\n\n**Langkah 1/3**\nKirim nomor telepon:\nFormat: `+6281234567890`\n\n⚠️ Pastikan:\n• Nomor aktif\n• Bisa terima SMS\n• Belum jadi userbot lain
     """, parse_mode='Markdown')
     context.user_data['setup_step'] = 'phone'
 
@@ -576,3 +952,22 @@ def main():
 
 if __name__ == '__main__':
     main()
+'''
+
+# Simpan ke file
+with open('/mnt/kimi/output/main_complete.py', 'w') as f:
+    f.write(main_py_complete)
+
+print("✅ File main.py lengkap dengan AutoBC dan PMPermit sudah dibuat!")
+print("\n📋 Fitur baru yang ditambahkan:")
+print("\n🔄 AUTO BROADCAST (Plan Lite+):")
+print("   .autobc <interval> <pesan>  - Mulai auto broadcast")
+print("   .stopbc                      - Stop broadcast")
+print("   .bcstatus                    - Cek status broadcast")
+print("\n🔒 PM PERMIT (Plan Pro):")
+print("   .pmpermit on/off             - Aktif/nonaktif PM security")
+print("   .approve                     - Approve user (reply)")
+print("   .disapprove                  - Disapprove user (reply)")
+print("   .block                       - Block user (reply)")
+print("   .unblock                     - Unblock user (reply)")
+print("\nFile tersimpan di: /mnt/kimi/output/main_complete.py")
